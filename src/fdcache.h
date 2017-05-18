@@ -20,6 +20,7 @@
 #ifndef FD_CACHE_H_
 #define FD_CACHE_H_
 
+#include <tr1/functional>
 #include <sys/statvfs.h>
 #include "curl.h"
 
@@ -157,6 +158,7 @@ class FdEntity
     bool SetUId(uid_t uid);
     bool SetGId(gid_t gid);
     bool SetContentType(const char* path);
+	const headers_t& GetMeta() const;
 
     int Load(off_t start = 0, size_t size = 0);                 // size=0 means loading to end
     int NoCacheLoadAndPost(off_t start = 0, size_t size = 0);   // size=0 means loading to end
@@ -171,6 +173,13 @@ class FdEntity
     ssize_t Write(const char* bytes, off_t start, size_t size);
 };
 typedef std::map<std::string, class FdEntity*> fdent_map_t;   // key=path, value=FdEntity*
+typedef std::tr1::function<int(const std::string& path, const FdEntity* ent)> ScanCallBackFuncType;
+
+enum {
+	SCAN_FAILED = -1,
+	SCAN_CONTINUE = 0,
+	SCAN_EXIT = 1
+};
 
 //------------------------------------------------
 // class FdManager
@@ -216,6 +225,8 @@ class FdManager
     void Rename(const std::string &from, const std::string &to);
     bool Close(FdEntity* ent);
     bool ChangeEntityToTempPath(FdEntity* ent, const char* path);
+
+	int ScanFdEntity(ScanCallBackFuncType callback);
 };
 
 #endif // FD_CACHE_H_

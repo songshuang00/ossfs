@@ -434,6 +434,17 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
     return -ENOENT;
   }
 
+  FdEntity* ent;
+  if(NULL != (ent = FdManager::get()->GetFdEntity(path, -1))) {
+      if(!convert_header_to_stat(strpath.c_str(), ent->GetMeta(), pstat, forcedir)){
+        S3FS_PRN_ERR("failed convert headers to stat[path=%s]", strpath.c_str());
+        return -ENOENT;
+      }
+
+	  S3FS_PRN_DBG("[path=%s] exist", path);
+	  return 0;
+  }
+
   // At first, check path
   strpath     = path;
   result      = s3fscurl.HeadRequest(strpath.c_str(), (*pheader));
@@ -757,6 +768,12 @@ static int put_headers(const char* path, headers_t& meta, bool is_copy)
 
   S3FS_PRN_INFO2("[path=%s]", path);
 
+  result = s3fscurl.HeadRequest(path, meta);
+  s3fscurl.DestroyCurlHandle();
+  if (result == -ENOENT) {
+	create_file_object(path, get_mode(meta), get_uid(meta), get_gid(meta));
+  }
+
   // files larger than 5GB must be modified via the multipart interface
   // *** If there is not target object(a case of move command),
   //     get_object_attribute() returns error with initilizing buf.
@@ -942,18 +959,20 @@ static int s3fs_create(const char* path, mode_t mode, struct fuse_file_info* fi)
   }else if(0 != result){
     return result;
   }
-  result = create_file_object(path, mode, pcxt->uid, pcxt->gid);
   StatCache::getStatCacheData()->DelStat(path);
-  if(result != 0){
-    return result;
-  }
-
 
   FdEntity*   ent;
   headers_t   meta;
-  get_object_attribute(path, NULL, &meta);
+  meta["Content-Type"]     = S3fsCurl::LookupMimeType(string(path));
+  meta["x-oss-meta-uid"]   = str(pcxt->uid);
+  meta["x-oss-meta-gid"]   = str(pcxt->gid);
+  meta["x-oss-meta-mode"]  = str(mode);
+  meta["x-oss-meta-mtime"] = str(time(NULL));
   if(NULL == (ent = FdManager::get()->Open(path, &meta, 0, -1, false, true))){
     return -EIO;
+  }
+  if(NULL == (ent = FdManager::get()->GetFdEntity(path, -1))) {
+		abort();
   }
   fi->fh = ent->GetFd();
   S3FS_MALLOCTRIM(0);
@@ -2403,6 +2422,48 @@ static int s3fs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off
   return result;
 }
 
+static int scan_fdentity_callback(const char* prefix, S3ObjList* head, const char* delimiter,
+	bool check_content_only, const string& path, const FdEntity* ent)
+{
+    S3FS_PRN_DBG("prefix: %s, path: %s", prefix, path.c_str());
+
+	size_t prefix_len = strlen(prefix);
+	if (prefix_len > 0 && strncmp(prefix, path.c_str(), prefix_len) != 0) {
+		return SCAN_CONTINUE;
+	}
+
+	string name;
+	if (delimiter) {
+		name = path.substr(0, path.find_first_of(delimiter, prefix_len));
+	} else {
+        name = path;
+	}
+
+	if (!head->insert(name.c_str(), NULL, false)){
+		return SCAN_FAILED;
+	}
+    S3FS_PRN_DBG("prefix: %s, path: %s name: %s head empty: %d", prefix, path.c_str(), name.c_str(), head->IsEmpty());
+
+	if (check_content_only)
+		return SCAN_EXIT;
+
+	return SCAN_CONTINUE;
+}
+
+static int list_objects_from_fdentity(const char* prefix, S3ObjList* head, const char* delimiter, bool check_content_only)
+{
+    if (prefix == NULL || prefix[0] == '\0') {
+		return -1;
+	}
+
+	int result;
+	result = FdManager::get()->ScanFdEntity(bind(scan_fdentity_callback,
+		prefix, head, delimiter, check_content_only,
+		std::tr1::placeholders::_1, std::tr1::placeholders::_2));
+
+	return result;
+}
+
 static int list_bucket(const char* path, S3ObjList& head, const char* delimiter, bool check_content_only)
 {
   int       result;
@@ -2417,6 +2478,8 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
   BodyData* body;
 
   S3FS_PRN_INFO1("[path=%s]", path);
+
+  list_objects_from_fdentity(path, &head, delimiter, check_content_only);
 
   if(delimiter && 0 < strlen(delimiter)){
     query_delimiter += "delimiter=";

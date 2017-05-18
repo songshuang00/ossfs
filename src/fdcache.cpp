@@ -840,6 +840,11 @@ int FdEntity::Open(headers_t* pmeta, ssize_t size, time_t time)
   return 0;
 }
 
+const headers_t& FdEntity::GetMeta() const
+{
+	return orgmeta;
+}
+
 // [NOTE]
 // This method is called from olny nocopapi functions.
 // So we do not check disk space for this option mode, if there is no enough
@@ -1840,9 +1845,10 @@ FdEntity* FdManager::Open(const char* path, headers_t* pmeta, ssize_t size, time
       // The reason why this process here, please look at the definition of the
       // comments of NOCACHE_PATH_PREFIX_FORM symbol.
       //
-      string tmppath("");
-      FdManager::MakeRandomTempPath(path, tmppath);
-      fent[tmppath] = ent;
+      //string tmppath("");
+      //FdManager::MakeRandomTempPath(path, tmppath);
+      //fent[tmppath] = ent;
+      fent[path] = ent;
     }
   }else{
     return NULL;
@@ -1931,6 +1937,21 @@ bool FdManager::ChangeEntityToTempPath(FdEntity* ent, const char* path)
     }
   }
   return false;
+}
+
+int FdManager::ScanFdEntity(ScanCallBackFuncType callback)
+{
+  AutoLock auto_lock(&FdManager::fd_manager_lock);
+
+  int ret = SCAN_FAILED;
+  for(fdent_map_t::iterator iter = fent.begin(); iter != fent.end(); ++iter){
+	  int ret = callback((*iter).first, (*iter).second);
+	  if (ret != SCAN_CONTINUE) {
+		  break;
+	  }
+  }
+
+  return ret;
 }
 
 /*
